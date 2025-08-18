@@ -7,8 +7,8 @@
 ## Wiring (client)
 - A4988 (AZ): `STEP=14`, `DIR=27`, `ENABLE=12 (LOW=enable)`
 - 28BYJ-48 ULN2003 (EL): `IN1=32`, `IN2=33`, `IN3=25`, `IN4=4` (half-step)
-- Laser: `GPIO 2`
-- SD (VSPI): `CS=5`, `SCK=18`, `MISO=19`, `MOSI=23`
+- Laser (via NPN like BC547 + resistor): `GPIO=15`
+- SD (VSPI): `CS=13`, `SCK=18`, `MISO=19`, `MOSI=23`
 - MAX9814: OUT → `ADC1 GPIO 34`
 - DAC out → amp/speaker: `GPIO 26`
 
