@@ -1,3 +1,9 @@
+# WHO OWNS SPACE?
+
+"Who owns space?" is an art project using satellite trackers to point on starlink satellites using a laser.
+
+
+
 # Client Module (ESP32) – Satellite Tracker
 
 Features:
