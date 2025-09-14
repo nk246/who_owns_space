@@ -2,6 +2,21 @@
 
 "Who owns space?" is an art project using satellite trackers to point on starlink satellites using a laser.
 
+# Client Module (ESP32) – Satellite Tracker
+
+Features:
+- Send UTC time to Client Modules
+- Assign satellites to Client Modules
+- Debug and fine tune Client Modules through web interface
+
+## Wiring (Server)
+- DS3231(RTC): `SQW=14`, `SCL=27`, `SDA=12`
+- SD (VSPI): `CS=5`, `SCK=18`, `MISO=19`, `MOSI=23`
+
+## Access to Web Interface
+- Connect phone, tablet or computer via WiFi to `ESP32_Master_Network`using the password `123456789`
+- Open your web browser and open `192.168.4.1`
+- Now you can play around with all the functions on the web interface. Commands are the same you can find further below in `### Serial Commands`
 
 
 # Client Module (ESP32) – Satellite Tracker
