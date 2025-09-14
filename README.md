@@ -16,7 +16,7 @@ Features:
 ## Access to Web Interface
 - Connect phone, tablet or computer via WiFi to `ESP32_Master_Network`using the password `123456789`
 - Open your web browser and open `192.168.4.1`
-- Now you can play around with all the functions on the web interface. Commands are the same you can find further below in `### Serial Commands`
+- Now you can play around with all the functions on the web interface. Commands are the same you can find further below in `Serial Commands`
 
 
 # Client Module (ESP32) – Satellite Tracker
