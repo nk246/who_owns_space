@@ -1,17 +1,26 @@
 #pragma once
 #include <Arduino.h>
-#include <SD.h>
-
-enum LaserMode : uint8_t { LASER_OFF=0, LASER_ON=1, LASER_TRACK=2 };
+#include "config.h"
 
 void motorsInit();
-void motorsMoveTo(float azDeg, float elDeg);
-void motorsReturnToNull();
-void motorsSavePosition();
-void motorsLoadPosition();
+void motorsSetTrackingActive(bool on);
 bool motorsIsMoving();
 
-// Laser/Tracking linkage controls
+void motorsManualStepAZ(int32_t steps);
+void motorsManualStepEL(int32_t steps);
+
+void motorsGotoAzDeg(float azDeg);
+void motorsGotoElDeg(float elDeg);
+
+// tracking move (rate-limited & smoothed)
+void motorsTrackTo(float targetAzDeg, float targetElDeg);
+
+// cable-safe return to null following backtrack
+void motorsReturnToNull();
+void motorsZeroHere();
+
+void motorsSavePosition();
+void motorsLoadPosition();
+
 void motorsSetLaserMode(LaserMode m);
 LaserMode motorsGetLaserMode();
-void motorsSetTrackingActive(bool active);

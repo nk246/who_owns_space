@@ -1,81 +1,85 @@
 #pragma once
-#include <Arduino.h>
 
-// ------------------- WiFi Settings -------------------
-inline constexpr char WIFI_SSID[] = "ESP32_Master_Network";
-inline constexpr char WIFI_PASS[] = "123456789";
-inline constexpr char MASTER_IP[] = "192.168.4.1";
-inline constexpr uint16_t TCP_PORT = 80;     // satellite assignment
-inline constexpr uint16_t UDP_PORT = 4210;   // time broadcast
+// ===== WiFi / Server =====
+#define WIFI_SSID   "ESP32_Master_Network"
+#define WIFI_PASS   "123456789"
+#define MASTER_IP   "192.168.4.1"
+#define TCP_PORT    80
+#define UDP_PORT    4210
+#define UDP_CMD_PORT 4212
+#define SERVER_REG_PORT 4213
 
-// ------------------- Command Channel -------------------
-inline constexpr uint16_t CMD_PORT = 8080;   // master command server port
-inline constexpr uint8_t  CLIENT_ID = 1;     // <-- set a unique ID per client (1,2,3,...)
+// ===== Debug =====
+#define DEBUG 1
 
-// ------------------- Retry Settings -------------------
-inline constexpr unsigned long SAT_REQUEST_INTERVAL_MS = 10000; // Request every 10s if none
+// ===== Pins =====
+// A4988 (AZ)
+#define AZ_STEP_PIN    14
+#define AZ_DIR_PIN     27
+#define AZ_ENABLE_PIN  12  // LOW = enable
 
-// ------------------- Motor Pins -------------------
-// NEMA17 + A4988 (Azimuth)
-inline constexpr uint8_t AZ_STEP_PIN   = 14;
-inline constexpr uint8_t AZ_DIR_PIN    = 27;
-inline constexpr uint8_t AZ_ENABLE_PIN = 12;  // enable (LOW = on)
+// 28BYJ-48 ULN2003 (EL)
+#define EL_IN1  32
+#define EL_IN2  33
+#define EL_IN3  5
+#define EL_IN4  4   // if boot messages persist, move to 16 and rewire
 
-// 28BYJ-48 + ULN2003 (Elevation)
-inline constexpr uint8_t EL_IN1 = 32;
-inline constexpr uint8_t EL_IN2 = 33;
-inline constexpr uint8_t EL_IN3 = 25;
-inline constexpr uint8_t EL_IN4 = 4;
+// LASER (via NPN to 5V)
+#define LASER_PIN  15
 
-// ------------------- Laser Pin & Mode -------------------
-inline constexpr uint8_t LASER_PIN = 2;
-// Laser modes: 0=OFF, 1=ON, 2=TRACK (only on while tracking & EL within range)
-inline constexpr uint8_t LASER_DEFAULT_MODE = 2;
+// SD (VSPI)
+#define SD_CS    13
+#define SD_SCK   18
+#define SD_MISO  19
+#define SD_MOSI  23
 
-// ------------------- SD Card Pins -------------------
-inline constexpr uint8_t SD_CS   = 5;
-inline constexpr uint8_t SD_SCK  = 18;
-inline constexpr uint8_t SD_MISO = 19;
-inline constexpr uint8_t SD_MOSI = 23;
+// Audio
+#define MIC_PIN  34
+#define DAC_PIN  26
 
-// ------------------- Audio -------------------
-inline constexpr uint8_t MIC_PIN = 34;   // MAX9814 to ADC1
-inline constexpr uint8_t DAC_PIN = 26;   // ESP32 DAC pin 26 -> speaker amp
+// ===== Elevation limits =====
+#define EL_MIN_DEG  0.0f
+#define EL_MAX_DEG  180.0f
 
-// ------------------- Elevation Limits -------------------
-inline constexpr float EL_MIN_DEG = 0.0f;
-inline constexpr float EL_MAX_DEG = 180.0f;
+// ===== Laser mode =====
+enum LaserMode : uint8_t { LASER_OFF=0, LASER_ON=1, LASER_TRACK=2 };
+#define LASER_DEFAULT_MODE LASER_TRACK
 
-// ------------------- Audio controls (defaults) -------------------
-inline constexpr bool   AUDIO_USE_POT     = false;
-inline constexpr uint8_t VOLUME_POT_PIN   = 35;        // ignored if no pot
-inline constexpr uint8_t AUDIO_FIXED_VOLUME = 180;     // 0..255
+// ===== Motion tuning =====
+// --- Motor/drive params (AZ) ---
+#define AZ_MOTOR_STEPS_PER_REV   200.0f   // NEMA-17
+#define AZ_MICROSTEPS            16.0f    // set by your driver (jumpers/DIP/SPI)
+#define AZ_GEAR_RATIO            1.0f     // >1.0 if reduction (e.g., 2.0 for 2:1)
 
-// Noise gate thresholds (12-bit ADC counts)
-inline constexpr int AUDIO_GATE_OPEN  = 250;
-inline constexpr int AUDIO_GATE_CLOSE = 180;
+// Auto-computed:
+#define AZ_STEPS_PER_DEG  ((AZ_MOTOR_STEPS_PER_REV * AZ_MICROSTEPS * AZ_GEAR_RATIO) / 360.0f)
+#define EL_STEPS_PER_DEG   10.6667f // ~ 2048 steps / 192 deg ≈ 10.667 steps/deg (28BYJ-48)
+#define AZ_MAX_SPEED_DPS   90.0f    // deg per second max slew
+#define EL_MAX_SPEED_DPS   45.0f    // deg per second max slew
+#define AZ_STEP_DELAY_US   500      // microseconds per step at base speed
+#define EL_STEP_DELAY_US   1200
 
-// Limiter threshold (post-gain), 0..4095
-inline constexpr int AUDIO_LIMIT = 3600;
+// ===== Audio defaults =====
+#define AUDIO_FIXED_VOLUME        180   // 0..255 passthrough base vol
+#define AUDIO_LIMIT               3600  // 0..4095
+#define INJECT_NOISE_WHEN_MOVING  true
+#define INJECT_NOISE_MIX          0.12f // 0..1
+#define INJECT_NOISE_FLOOR        180
+#define NOTCH_ON                  false
+#define NOTCH_HZ                  2500.0f
+#define NOTCH_Q                   12.0f
 
-// Synthetic noise when motors running (to keep sound present)
-inline constexpr bool  INJECT_NOISE_WHEN_MOVING = true;
-inline constexpr float INJECT_NOISE_MIX   = 0.10f;     // 0..1
-inline constexpr int   INJECT_NOISE_FLOOR = 180;       // 0..4095
+// Beeps
+#define BEEP_ON_TRACK_START   false
+#define BEEP_ON_TRACK_END     false
+#define BEEP_FREQ_HZ          1200.0f
+#define BEEP_DUR_MS           180
+#define BEEP_ECHO_DELAY_MS    60
+#define BEEP_ECHO_DECAY       0.45f
+#define BEEP_VOLUME           0     // start quieter Default 120
 
-// Optional narrow notch to tame squeal
-inline constexpr bool  NOTCH_ON  = false;
-inline constexpr float NOTCH_HZ  = 2600.0f;
-inline constexpr float NOTCH_Q   = 12.0f;
+// Optional boot sanity beep
+#define AUDIO_BOOT_TONE_TEST  1
 
-// ------------------- Beep/Echo defaults -------------------
-inline constexpr bool  BEEP_ON_TRACK_START = true;
-inline constexpr bool  BEEP_ON_TRACK_END   = true;
-inline constexpr float BEEP_FREQ_HZ        = 800.0f;
-inline constexpr int   BEEP_DUR_MS         = 150;      // main tone duration
-inline constexpr int   BEEP_ECHO_DELAY_MS  = 120;      // ms after main tone
-inline constexpr float BEEP_ECHO_DECAY     = 0.5f;     // 0..1
-inline constexpr uint8_t BEEP_VOLUME       = 180;      // 0..255 loudness
-
-// ------------------- Debug -------------------
-inline constexpr bool DEBUG = true;
+// ===== enable test-run simulator =====
+#define USE_TESTRUN 1

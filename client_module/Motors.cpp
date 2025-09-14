@@ -1,97 +1,67 @@
 #include "Motors.h"
-#include "config.h"
-#include <Arduino.h>
 #include <SD.h>
+#include <math.h>
 
-// ---------- Tuning ----------
-static constexpr float AZ_STEPS_PER_REV = 200.0f * 16.0f; // 1.8° motor, 16x microsteps
-static constexpr float EL_STEPS_PER_REV = 4096.0f;        // 28BYJ-48
-static constexpr int   AZ_PULSE_US      = 700;
-static constexpr int   EL_STEP_DELAY_MS = 2;
+// ==== State ====
+static volatile bool sTrackingActive = false;
 
-// ---------- State ----------
-static float currentAz = 0.0f;
-static float currentEl = 0.0f;
-static volatile bool sMoving = false;
+static float sAzDeg = 0.0f;   // current mechanical estimate (can be outside 0..360 but bounded)
+static float sElDeg = 0.0f;
+static LaserMode sLaserMode = LASER_DEFAULT_MODE;
 
-static LaserMode gLaserMode = (LaserMode)LASER_DEFAULT_MODE;
-static bool gTrackingActive = false;
+// backtrack history for AZ: record signed step deltas
+#define AZ_HIST_MAX 600
+static int16_t azHist[AZ_HIST_MAX];
+static int azHistLen = 0;
 
-// ---------- 28BYJ-48 Half-step sequence ----------
-static const uint8_t SEQ[8][4] = {
+// EL driver half-step sequence
+static const uint8_t EL_SEQ[8][4] = {
   {1,0,0,0},{1,1,0,0},{0,1,0,0},{0,1,1,0},
   {0,0,1,0},{0,0,1,1},{0,0,0,1},{1,0,0,1}
 };
+static int elPhase = 0;
 
-static inline void elWritePhase(uint8_t i) {
-  digitalWrite(EL_IN1, SEQ[i][0]);
-  digitalWrite(EL_IN2, SEQ[i][1]);
-  digitalWrite(EL_IN3, SEQ[i][2]);
-  digitalWrite(EL_IN4, SEQ[i][3]);
+// Keep any angle in [0..360)
+static inline float norm360(float a){
+  a = fmodf(a, 360.0f);
+  if (a < 0) a += 360.0f;
+  return a;
 }
 
-static void applyLaser(float elDeg) {
-  bool on = false;
-  switch (gLaserMode) {
-    case LASER_OFF:   on = false; break;
-    case LASER_ON:    on = true;  break;
-    case LASER_TRACK: on = (gTrackingActive && elDeg > EL_MIN_DEG && elDeg < EL_MAX_DEG); break;
-  }
-  digitalWrite(LASER_PIN, on ? HIGH : LOW);
+// Map 'target' (wrapped 0..360) to the nearest equivalent angle (... -720, -360, 0, 360, 720 ...)
+// around the current reference 'ref' (unbounded). Result is unbounded but closest to 'ref'.
+static inline float unwrapNearest(float targetWrappedDeg, float refDeg){
+  float tw = norm360(targetWrappedDeg);
+  float k  = roundf((refDeg - tw) / 360.0f);
+  return tw + 360.0f * k;
 }
 
-static void motorsStepAZ(bool dir, uint32_t steps) {
-  sMoving = true;
-  digitalWrite(AZ_ENABLE_PIN, LOW); // enable driver
-  digitalWrite(AZ_DIR_PIN, dir ? HIGH : LOW);
-  for (uint32_t i = 0; i < steps; i++) {
-    digitalWrite(AZ_STEP_PIN, HIGH);
-    delayMicroseconds(AZ_PULSE_US);
-    digitalWrite(AZ_STEP_PIN, LOW);
-    delayMicroseconds(AZ_PULSE_US);
-  }
-  sMoving = false;
+// Keep sAzDeg bounded to [-AZ_STATE_LIMIT_DEG, +AZ_STATE_LIMIT_DEG]
+#ifndef AZ_STATE_LIMIT_DEG
+#define AZ_STATE_LIMIT_DEG 360.0f
+#endif
+
+static inline void clampAzState(){
+  while (sAzDeg >  AZ_STATE_LIMIT_DEG) sAzDeg -= 360.0f;
+  while (sAzDeg < -AZ_STATE_LIMIT_DEG) sAzDeg += 360.0f;
 }
 
-static void motorsStepEL(int32_t steps) {
-  sMoving = true;
-  int8_t dir = (steps >= 0) ? +1 : -1;
-  uint32_t n = (steps >= 0) ? steps : -steps;
-  uint8_t phase = 0;
-  for (uint32_t i = 0; i < n; i++) {
-    phase = (phase + (dir > 0 ? 1 : 7)) & 0x07;
-    elWritePhase(phase);
-    delay(EL_STEP_DELAY_MS);
-  }
-  sMoving = false;
+static inline void laserUpdateRuntime() {
+  if (sLaserMode == LASER_OFF) { digitalWrite(LASER_PIN, LOW); return; }
+  if (sLaserMode == LASER_ON)  { digitalWrite(LASER_PIN, HIGH); return; }
+  // TRACK mode: only on when within EL limits and tracking active
+  if (sTrackingActive && sElDeg >= EL_MIN_DEG && sElDeg <= EL_MAX_DEG) digitalWrite(LASER_PIN, HIGH);
+  else digitalWrite(LASER_PIN, LOW);
 }
 
-bool motorsIsMoving() { return sMoving; }
-
-void motorsSavePosition() {
-  File file = SD.open("/pos.txt", FILE_WRITE);
-  if (file) {
-    file.printf("%.2f,%.2f\n", currentAz, currentEl);
-    file.close();
-    if (DEBUG) Serial.println(F("[SD] Position saved"));
-  }
-}
-
-void motorsLoadPosition() {
-  File file = SD.open("/pos.txt", FILE_READ);
-  if (!file) return;
-  if (file.available()) {
-    String line = file.readStringUntil('\n');
-    sscanf(line.c_str(), "%f,%f", &currentAz, &currentEl);
-    if (DEBUG) Serial.printf("[SD] Loaded pos: AZ=%.2f  EL=%.2f\n", currentAz, currentEl);
-  }
-  file.close();
-}
+void motorsSetLaserMode(LaserMode m){ sLaserMode=m; laserUpdateRuntime(); }
+LaserMode motorsGetLaserMode(){ return sLaserMode; }
 
 void motorsInit() {
   pinMode(AZ_STEP_PIN, OUTPUT);
   pinMode(AZ_DIR_PIN, OUTPUT);
   pinMode(AZ_ENABLE_PIN, OUTPUT);
+  digitalWrite(AZ_ENABLE_PIN, LOW);
 
   pinMode(EL_IN1, OUTPUT);
   pinMode(EL_IN2, OUTPUT);
@@ -100,77 +70,151 @@ void motorsInit() {
 
   pinMode(LASER_PIN, OUTPUT);
   digitalWrite(LASER_PIN, LOW);
-  digitalWrite(AZ_ENABLE_PIN, LOW);
 
   motorsLoadPosition();
-  applyLaser(currentEl);
+  laserUpdateRuntime();
 }
 
-void motorsMoveTo(float azDeg, float elDeg) {
-  // Clamp elevation
+void motorsSetTrackingActive(bool on){ sTrackingActive = on; laserUpdateRuntime(); }
+bool motorsIsMoving(){ return sTrackingActive; }
+
+// ===== Low-level steppers =====
+static void azStepSigned(int32_t steps, unsigned int usDelay) {
+  if (steps == 0) return;
+  digitalWrite(AZ_DIR_PIN, steps > 0 ? HIGH : LOW);
+  int32_t n = abs(steps);
+  for (int32_t i=0;i<n;i++) {
+    digitalWrite(AZ_STEP_PIN, HIGH); delayMicroseconds(usDelay);
+    digitalWrite(AZ_STEP_PIN, LOW);  delayMicroseconds(usDelay);
+  }
+  sAzDeg += (float)steps / AZ_STEPS_PER_DEG; // signed already
+  clampAzState();                             // keep state within [-AZ_STATE_LIMIT_DEG..+AZ_STATE_LIMIT_DEG]
+  if (azHistLen < AZ_HIST_MAX) azHist[azHistLen++] = (int16_t)steps;
+}
+
+static void elWritePhase(int ph) {
+  digitalWrite(EL_IN1, EL_SEQ[ph][0]);
+  digitalWrite(EL_IN2, EL_SEQ[ph][1]);
+  digitalWrite(EL_IN3, EL_SEQ[ph][2]);
+  digitalWrite(EL_IN4, EL_SEQ[ph][3]);
+}
+
+static void elStepSigned(int32_t steps, unsigned int usDelay) {
+  if (steps == 0) return;
+  int dir = (steps > 0) ? 1 : -1;
+  int32_t n = abs(steps);
+  for (int32_t i=0;i<n;i++) {
+    elPhase = (elPhase + dir) & 7;
+    elWritePhase(elPhase);
+    delayMicroseconds(usDelay);
+  }
+  sElDeg += (float)steps / EL_STEPS_PER_DEG;
+}
+
+// ===== Manual =====
+void motorsManualStepAZ(int32_t steps) { azStepSigned(steps, AZ_STEP_DELAY_US); motorsSavePosition(); }
+void motorsManualStepEL(int32_t steps) {
+  float next = sElDeg + (float)steps / EL_STEPS_PER_DEG;
+  if (next < EL_MIN_DEG || next > EL_MAX_DEG) return;
+  elStepSigned(steps, EL_STEP_DELAY_US);
+  motorsSavePosition();
+}
+
+// ===== Absolute moves =====
+void motorsGotoAzDeg(float azDeg) {
+  // unwrap the target to the nearest equivalent angle around current state
+  float target = unwrapNearest(azDeg, sAzDeg);
+  float d = target - sAzDeg;
+  int32_t steps = (int32_t)roundf(d * AZ_STEPS_PER_DEG);
+  azStepSigned(steps, AZ_STEP_DELAY_US);
+  motorsSavePosition();
+}
+
+void motorsGotoElDeg(float elDeg) {
   if (elDeg < EL_MIN_DEG) elDeg = EL_MIN_DEG;
   if (elDeg > EL_MAX_DEG) elDeg = EL_MAX_DEG;
-
-  // ---------- AZ ----------
-  float deltaAz = azDeg - currentAz;
-  if (deltaAz > 360.0f)  deltaAz -= 360.0f;
-  if (deltaAz < -360.0f) deltaAz += 360.0f;
-  uint32_t azSteps = (uint32_t) roundf(fabs(deltaAz) * (AZ_STEPS_PER_REV / 360.0f));
-  bool azDir = (deltaAz >= 0.0f);
-  if (azSteps > 0) {
-    if (DEBUG) Serial.printf("[AZ] Move %.2f° -> %u steps (%s)\n", deltaAz, azSteps, azDir ? "CW" : "CCW");
-    motorsStepAZ(azDir, azSteps);
-    currentAz = azDeg;
-  }
-
-  // ---------- EL ----------
-  float deltaEl = elDeg - currentEl;
-  int32_t elSteps = (int32_t) llroundf(deltaEl * (EL_STEPS_PER_REV / 360.0f));
-  if (elSteps != 0) {
-    if (DEBUG) Serial.printf("[EL] Move %.2f° -> %ld steps (%s)\n", deltaEl, (long)elSteps, (elSteps > 0) ? "UP" : "DOWN");
-    motorsStepEL(elSteps);
-    currentEl = elDeg;
-  }
-
-  applyLaser(currentEl);
+  float d = elDeg - sElDeg;
+  int32_t steps = (int32_t)roundf(d * EL_STEPS_PER_DEG);
+  elStepSigned(steps, EL_STEP_DELAY_US);
   motorsSavePosition();
+}
+
+// ===== Tracking =====
+void motorsTrackTo(float targetAzDeg, float targetElDeg) {
+  sTrackingActive = true;
+
+  // clamp EL
+  if (targetElDeg < EL_MIN_DEG) targetElDeg = EL_MIN_DEG;
+  if (targetElDeg > EL_MAX_DEG) targetElDeg = EL_MAX_DEG;
+
+  // compute deltas limited by speed
+  static unsigned long last = 0;
+  unsigned long now = millis();
+  float dt = (last==0)?0.02f:((now-last)/1000.0f);
+  if (dt < 0.01f) dt = 0.01f;
+  last = now;
+
+  // AZ: unwrap target to the nearest turn around current state (prevents multi-rev chasing)
+  float targetAzUnwrapped = unwrapNearest(targetAzDeg, sAzDeg);
+  float dAz = targetAzUnwrapped - sAzDeg;
+
+  float maxAzMove = AZ_MAX_SPEED_DPS * dt;
+  if (dAz >  maxAzMove) dAz =  maxAzMove;
+  if (dAz < -maxAzMove) dAz = -maxAzMove;
+
+  float dEl = targetElDeg - sElDeg;
+  float maxElMove = EL_MAX_SPEED_DPS * dt;
+  if (dEl >  maxElMove) dEl =  maxElMove;
+  if (dEl < -maxElMove) dEl = -maxElMove;
+
+  int32_t azSteps = (int32_t)roundf(dAz * AZ_STEPS_PER_DEG);
+  int32_t elSteps = (int32_t)roundf(dEl * EL_STEPS_PER_DEG);
+
+  if (azSteps) azStepSigned(azSteps, AZ_STEP_DELAY_US);
+  if (elSteps) elStepSigned(elSteps, EL_STEP_DELAY_US);
+
+  laserUpdateRuntime();
 }
 
 void motorsReturnToNull() {
-  if (DEBUG) Serial.println(F("[HOME] Returning to null (AZ=0°, EL=0°)"));
+  // EL first to horizon (down/up to 0)
+  motorsGotoElDeg(0.0f);
 
-  // EL down first
-  float targetEl = EL_MIN_DEG;
-  float deltaEl = targetEl - currentEl;
-  int32_t elSteps = (int32_t) llroundf(deltaEl * (EL_STEPS_PER_REV / 360.0f));
-  if (elSteps != 0) motorsStepEL(elSteps);
-  currentEl = targetEl;
+  // AZ backtrack reverse history
+  for (int i = azHistLen - 1; i >= 0; --i) {
+    int16_t st = azHist[i];
+    if (st) azStepSigned(-st, AZ_STEP_DELAY_US);
+  }
+  azHistLen = 0;
 
-  // Laser off while homing (explicit)
-  digitalWrite(LASER_PIN, LOW);
-
-  // AZ to zero
-  float targetAz = 0.0f;
-  float deltaAz = targetAz - currentAz;
-  uint32_t azSteps = (uint32_t) roundf(fabs(deltaAz) * (AZ_STEPS_PER_REV / 360.0f));
-  bool azDir = (deltaAz >= 0.0f);
-  if (azSteps > 0) motorsStepAZ(azDir, azSteps);
-  currentAz = targetAz;
-
+  // normalize state
+  sAzDeg = 0.0f; sElDeg = 0.0f;
   motorsSavePosition();
-  if (DEBUG) Serial.println(F("[HOME] Done."));
+  laserUpdateRuntime();
 }
 
-void motorsSetLaserMode(LaserMode m) {
-  gLaserMode = m;
-  applyLaser(currentEl);
+void motorsZeroHere() {
+  sAzDeg = 0.0f; sElDeg = 0.0f;
+  azHistLen = 0;
+  motorsSavePosition();
 }
 
-LaserMode motorsGetLaserMode() {
-  return gLaserMode;
+void motorsSavePosition() {
+  clampAzState(); // keep stored value tidy/bounded
+  File f = SD.open("/pos.dat", FILE_WRITE);
+  if (!f) return;
+  f.printf("%.4f,%.4f\n", sAzDeg, sElDeg);
+  f.close();
 }
 
-void motorsSetTrackingActive(bool active) {
-  gTrackingActive = active;
-  applyLaser(currentEl);
+void motorsLoadPosition() {
+  File f = SD.open("/pos.dat", FILE_READ);
+  if (!f) { sAzDeg=0; sElDeg=0; return; }
+  String line = f.readStringUntil('\n');
+  f.close();
+  float az=0,el=0;
+  if (sscanf(line.c_str(), "%f,%f", &az, &el)==2) {
+    sAzDeg=az; sElDeg=el;
+    clampAzState();
+  } else { sAzDeg=0; sElDeg=0; }
 }
